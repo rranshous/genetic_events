@@ -5,7 +5,11 @@ from itertools import izip
 
 # helper for those primitives
 def _int(p):
-    return int(str(p))
+    try:
+        return int(str(p))
+    except (AttributeError, TypeError):
+        # protect against redis natives
+        return 0
 
 def _create_child(p1, p2):
     """
@@ -104,10 +108,12 @@ def filter_costly_chromosomes(chromosome, run_id, cost, _sequence, _string,
     """
 
     # get our sample of the popuation
-    sample_ratio = .2
+    sample_ratio = .1
     target_population_size = _int(_string('target_population_size:'+run_id))
-    sample_size = target_population_size * sample_ratio
+    population_size = _int(_string('population_size:'+run_id))
+    sample_size = min(min(population_size, target_population_size) * sample_ratio, 3)
     sample = _sequence('costly_filter_sample:'+run_id)
+    print 'costly sample_size: %s' % sample_size
 
     # don't wanna divide by 0
     if len(sample) == 0:
@@ -119,21 +125,24 @@ def filter_costly_chromosomes(chromosome, run_id, cost, _sequence, _string,
     # left side of the list, this way we can pop off the right
     sample.push_head(cost)
 
+    print 'costly sample len: %s' % len(sample)
+
     # if the sample is too small, than we don't have enough
     # data to make a determination so we'll just let it go on
     if len(sample) < sample_size:
+        print 'costly sample too small'
         yield True
 
     # trim the sample to size
-    if len(sample) > sample_size:
+    else:
         # we added one, lets remove one
         sample.pop_tail()
 
     # if the chromosome is not too costly, than pass it on
-    # True = Keep
     print 'cost: %s :: sample_avg_cost: %s' % (cost, sample_avg_cost)
     if sample_avg_cost is False or cost <= sample_avg_cost:
         yield True
+
     else:
         yield _event('found_above_cost_chromosome', event_data)
 
@@ -152,39 +161,30 @@ def mate_chromosomes(chromosome, run_id, _sequence, _string):
     # get our datas
     sample_ratio = .1
     target_population_size = _int(_string('target_population_size:'+run_id))
-    current_population_size = _int(_string('population:'+run_id))
+    population_size = _int(_string('population_size:'+run_id))
     sample = _sequence('mate_chromosomes_sample:'+run_id)
 
     # we want to try and keep the population size
     # about the same, so we need to have those who mate
     # mate a lot if not that many people are mating
     # we'll have enough children as to reduce the difference between
-    # our current population and the target population by half
-    print 'current_population_size: %s' % current_population_size
-    print 'target_population diff: %s' % (target_population_size - current_population_size)
-    number_of_children = int((target_population_size - current_population_size) * .5)
+    # our current population and the target population by 1/10
+    print 'mate target_population_size: %s' % target_population_size
+    print 'mate population_size: %s' % population_size
+    print 'mate target_population diff: %s' % (target_population_size - population_size)
+    number_of_children = int((target_population_size - population_size) * .1)
     # we want at least 1 child, we're that awesome
     number_of_children = max(1, number_of_children)
-    print 'number of children: %s' % number_of_children
+    print 'mate number of children: %s' % number_of_children
+
+    # add our chromosome to the sample
+    sample.push_tail(json.dumps(chromosome))
 
     # our sample size has to be at least two large
     # (it takes two to tango)
-    min_sample_size = max(target_population_size * sample_ratio, 2)
-
-    # add our chromosome to the sample at a random location
-    if len(sample) in (0, 1):
-        # no point in being random if there are no other values
-        # encode to store in redis
-        sample.push_tail(json.dumps(chromosome))
-
-    else:
-        index = r.randrange(0, len(sample)-1)
-        # NOTE: would use insert here but redis natives replaces
-        #       not adds on insert
-        sample = _sequence('mate_chromomsomes_sample:'+run_id,
-                           sample[:index] +
-                            [json.dumps(chromosome)] +
-                            sample[index:])
+    min_sample_size = max(min(target_population_size, population_size) * sample_ratio, 2)
+    print 'mate min_sample_size: %s' % min_sample_size
+    print 'mate sample len: %s' % (len(sample))
 
     # if the sample is large enough, pick two chromosome's to mate
     if len(sample) >= min_sample_size:
@@ -200,6 +200,8 @@ def mate_chromosomes(chromosome, run_id, _sequence, _string):
             # and call the whole thing off
             yield False
 
+        print 'mating'
+
         # de-serialize
         chrom1, chrom2 = map(json.loads, (chrom1, chrom2))
 
@@ -211,6 +213,11 @@ def mate_chromosomes(chromosome, run_id, _sequence, _string):
             yield dict( chromosome = child,
                         parents = [chrom1, chrom2],
                         run_id = run_id )
+
+        print 'mate post sample len: %s' % len(sample)
+
+    else:
+        print 'mate sample too small'
 
 
 
@@ -268,15 +275,15 @@ def reintroduce_mutant(chromosome, run_id):
     yield True
 
 def increment_population(_string, run_id):
-    population = _string('population:'+run_id)
+    population = _string('population_size:'+run_id)
     population.incr()
-    print '[I] population: %s' % str(population)
+    print '[I] population_size %s' % str(population)
     yield False
 
 def decrement_population(_string, run_id):
-    population = _string('population:'+run_id)
+    population = _string('population_size:'+run_id)
     population.decr()
-    print '[D] population: %s' % str(population)
+    print '[D] population_size %s' % str(population)
     yield False
 
 
@@ -297,8 +304,6 @@ app  = EventApp('ga_pic',
 
                 # mate the good chromosomes, only good looking ppl get laid
                 (mate_chromosomes, 'created_chromosome'),
-                # mate all chromosomes
-                #('created_chromosome', mate_chromosomes, 'created_chromosome'),
 
                 # mutate chromosomes, this will also mutate the initial population
                 ('created_chromosome', mutate_chromosome, 'mutated_chromosome'),
