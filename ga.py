@@ -1,5 +1,6 @@
 import random as r
 from eventapp import EventApp
+import json
 
 # helper for those primitives
 def _int(p):
@@ -33,7 +34,7 @@ def create_initial_population(target_population_size, image_size,
             # the image bounds, and a random value
             gene = [r.randrange(0, image_size[0]),
                     r.randrange(0, image_size[1]),
-                    r.sample([0,1], 1)]
+                    r.sample([0,1], 1)[0]]
 
             # add the gene to our chromosome
             chromosome.append(gene)
@@ -60,13 +61,17 @@ def calculate_cost(chromosome, run_id, _string):
 
     # go through the gene's creating our chromosome image
     for gene in chromosome:
-        gene_x, gene_y, gene_value = gene
+        try:
+            gene_x, gene_y, gene_value = gene
+        except Exception, ex:
+            raise Exception( 'gene exception: %s %s' % (type(chromosome), str(chromosome)))
+
         offset = gene_x + gene_y * image_x
         chromosome_image[offset] = gene_value
 
     # now compare our resulting image to the target image
     for i in xrange(image_x * image_y):
-        if target_image[i] != chromosome_image[i]:
+        if int(target_image[i]) != chromosome_image[i]:
             cost += 1
 
     # now we know the cost, yield up an event announcing we found it
@@ -75,7 +80,7 @@ def calculate_cost(chromosome, run_id, _string):
                 cost = cost )
 
 
-def filter_costly_chromosomes(chromosome, run_id, cost, _list, _string):
+def filter_costly_chromosomes(chromosome, run_id, cost, _sequence, _string):
     """
     will filter all chromosome's which have an above avg cost
 
@@ -83,19 +88,20 @@ def filter_costly_chromosomes(chromosome, run_id, cost, _list, _string):
     """
 
     # get our sample of the popuation
-    sample_ratio = .2
+    sample_ratio = .5
     target_population_size = _int(_string('target_population_size:'+run_id))
     sample_size = target_population_size * sample_ratio
-    sample = map(int, _list('costly_filter_sample:'+run_id))
+    sample = _sequence('costly_filter_sample:'+run_id)
 
     # don't wanna divide by 0
     if len(sample) == 0:
         sample_avg_cost = False
     else:
-        sample_avg_cost = sum(sample) / len(sample)
+        sample_avg_cost = sum(map(int,sample)) / len(sample)
 
-    # add our chromosome's cost to the sample
-    sample.append(cost)
+    # add our chromosome's cost to the sample, add it to the
+    # left side of the list, this way we can pop off the right
+    sample.push_head(cost)
 
     # if the sample is too small, than we don't have enough
     # data to make a determination so we'll just let it go on
@@ -104,15 +110,19 @@ def filter_costly_chromosomes(chromosome, run_id, cost, _list, _string):
 
     # trim the sample to size
     if len(sample) > sample_size:
-        sample = sample[0:min(len(sample)-1, sample_size)]
+        # we added one, lets remove one
+        sample.pop_tail()
 
     # if the chromosome is not too costly, than pass it on
     # True = Keep
     print 'cost: %s :: sample_avg_cost: %s' % (cost, sample_avg_cost)
-    yield cost <= sample_avg_cost
+    if sample_avg_cost is False or cost <= sample_avg_cost:
+        yield True
+    else:
+        yield False
 
 
-def mate_chromosomes(chromosome, run_id, _list, _string):
+def mate_chromosomes(chromosome, run_id, _sequence, _string):
     """
     mates chromosomes from the same run, produces two chromosomes from
     two chromosomes
@@ -130,21 +140,35 @@ def mate_chromosomes(chromosome, run_id, _list, _string):
     target_population_size = max(2, target_population_size)
     # our sample size has to be at least two large
     sample_size = max(target_population_size * sample_ratio, 2)
-    sample = _list('mate_chromosomes_sample:'+run_id)
+    sample = _sequence('mate_chromosomes_sample:'+run_id)
+
+    print 'mate sample: %s' % [x for x in sample]
 
     # add our chromosome to the sample at a random location
-    print 'sample_len: %s' % len(sample)
     if len(sample) in (0, 1):
         # no point in being random if there are no other values
-        sample.append(chromosome)
+        # encode to store in redis
+        sample.push_tail(json.dumps(chromosome))
     else:
-        sample.insert(r.randrange(0, len(sample)-1), chromosome)
+        index = r.randrange(o, len(sample)-1)
+        # NOTE: would use insert here but redis natives replaces
+        #       not adds on insert
+        sample = _sequence('mate_chromomsomes_sample:'+run_id,
+                           sample[:index] +
+                            [json.dumps(chromosome)] +
+                            sample[index:])
+
+    print 'mate post add sample: %s' % [x for x in sample]
 
     # if the sample is large enough, pick two chromosome's to mate
     if len(sample) >= sample_size:
 
+        print 'mating'
+
         # pop two chromosomes from the sample
-        chrom1, chrom2 = sample.pop(1), sample.pop(1)
+        chrom1, chrom2 = sample.pop_head(), sample.pop_head()
+        # de-serialize
+        chrom1, chrom2 = map(json.loads, (chrom1, chrom2))
 
         # split the chromosomes and mate them
         mid = len(chrom1) / 2
@@ -184,17 +208,21 @@ def mutate_chromosome(chromosome, run_id, event, _string):
 
         # we mutate the chromosome by changing one of it's
         # gene's, it's x, its y, or it's value
-        choice = r.sample([0,1,2], 1)
-        gene = r.sample(chromosome, 1)
+        choice = r.sample([0,1,2], 1)[0]
+        gene = r.sample(chromosome, 1)[0]
 
         # change x or y
         if choice in (0, 1):
-            # change it's X limiting to possible range
-            skew = int(mutation_severity * image_size[choice])
+            # change it's X limiting to possible range, at least 1
+            skew = max(int(mutation_severity * image_size[choice]), 1)
             # limit to 0 -> image size
-            top = min(image_size[choice], gene[0] + skew)
+            top = min(image_size[choice], gene[choice] + skew)
             bottom = max(0, gene[choice] - skew)
-            gene[choice] = r.randrange(bottom, top)
+            try:
+                gene[choice] = r.randrange(bottom, top)
+            except Exception:
+                raise Exception('choice: %s\ngenechoice: %s\nbottom: %s\ntop: %s\nskew: %s\nimage size: %s'
+                                % (choice, gene[choice], bottom, top, skew, str(image_size)))
 
         # change value
         if choice == 2:
@@ -211,7 +239,7 @@ def mutate_chromosome(chromosome, run_id, event, _string):
 def reintroduce_mutant(chromosome, run_id):
     yield True
 
-
+# NOTE: It feels like there is somethign wrong w/ this flow
 app  = EventApp('ga_pic',
 
                 # save to redis our run's params
@@ -221,7 +249,7 @@ app  = EventApp('ga_pic',
                 (create_initial_population, 'created_chromosome'),
 
                 # calculate the cost of all new chromosomes
-                ('created_chromosome', calculate_cost, 'calculated_chromosome_cost'),
+                (calculate_cost, 'calculated_chromosome_cost'),
 
                 # filter above avg cost chromosomes
                 (filter_costly_chromosomes, 'found_below_cost_chromosome'),
@@ -230,6 +258,7 @@ app  = EventApp('ga_pic',
                 (mate_chromosomes, 'created_chromosome'),
 
                 # mutate chromosomes, this will also mutate the initial population
+                # NOTE: could this be feating off created chromosome?
                 (mutate_chromosome, 'mutated_chromosome'),
 
                 # once we've mutated a chromosome we want to re-introduce it
