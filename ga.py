@@ -1,10 +1,23 @@
 import random as r
 from eventapp import EventApp
 import json
+from itertools import izip
 
 # helper for those primitives
 def _int(p):
     return int(str(p))
+
+def _create_child(p1, p2):
+    """
+    creates a child by taking 1/2 the genes from each parent
+    each gene is put up against random to choose parent
+    """
+
+    child = []
+    # randomly choose from one of the parents genes
+    for genes in izip(p1, p2):
+        child.append(genes[r.randrange(0,2)])
+    return child
 
 def note_params(target_population_size, image_size, target_image,
                 run_id, _string):
@@ -12,6 +25,8 @@ def note_params(target_population_size, image_size, target_image,
     run_id = str(run_id)
     target_population_size = _string('target_population_size:'+run_id,
                                   target_population_size)
+    assert int(str(target_population_size)) >= 2, \
+            "Must have a population 2 or more"
     image_size_x = _string('image_size:x:'+run_id, image_size[0])
     image_size_y = _string('image_size:y:'+run_id, image_size[1])
     target_image = _string('target_image:'+run_id, target_image)
@@ -80,7 +95,8 @@ def calculate_cost(chromosome, run_id, _string):
                 cost = cost )
 
 
-def filter_costly_chromosomes(chromosome, run_id, cost, _sequence, _string):
+def filter_costly_chromosomes(chromosome, run_id, cost, _sequence, _string,
+                              _event, event_data):
     """
     will filter all chromosome's which have an above avg cost
 
@@ -88,7 +104,7 @@ def filter_costly_chromosomes(chromosome, run_id, cost, _sequence, _string):
     """
 
     # get our sample of the popuation
-    sample_ratio = .5
+    sample_ratio = .2
     target_population_size = _int(_string('target_population_size:'+run_id))
     sample_size = target_population_size * sample_ratio
     sample = _sequence('costly_filter_sample:'+run_id)
@@ -119,7 +135,7 @@ def filter_costly_chromosomes(chromosome, run_id, cost, _sequence, _string):
     if sample_avg_cost is False or cost <= sample_avg_cost:
         yield True
     else:
-        yield False
+        yield _event('found_above_cost_chromosome', event_data)
 
 
 def mate_chromosomes(chromosome, run_id, _sequence, _string):
@@ -133,24 +149,36 @@ def mate_chromosomes(chromosome, run_id, _sequence, _string):
     this means that the first few events we get we will not act on
     """
 
-    # get our sample of the population
-    sample_ratio = .02
+    # get our datas
+    sample_ratio = .1
     target_population_size = _int(_string('target_population_size:'+run_id))
-    # must have at least two to tango
-    target_population_size = max(2, target_population_size)
-    # our sample size has to be at least two large
-    sample_size = max(target_population_size * sample_ratio, 2)
+    current_population_size = _int(_string('population:'+run_id))
     sample = _sequence('mate_chromosomes_sample:'+run_id)
 
-    print 'mate sample: %s' % [x for x in sample]
+    # we want to try and keep the population size
+    # about the same, so we need to have those who mate
+    # mate a lot if not that many people are mating
+    # we'll have enough children as to reduce the difference between
+    # our current population and the target population by half
+    print 'current_population_size: %s' % current_population_size
+    print 'target_population diff: %s' % (target_population_size - current_population_size)
+    number_of_children = int((target_population_size - current_population_size) * .5)
+    # we want at least 1 child, we're that awesome
+    number_of_children = max(1, number_of_children)
+    print 'number of children: %s' % number_of_children
+
+    # our sample size has to be at least two large
+    # (it takes two to tango)
+    min_sample_size = max(target_population_size * sample_ratio, 2)
 
     # add our chromosome to the sample at a random location
     if len(sample) in (0, 1):
         # no point in being random if there are no other values
         # encode to store in redis
         sample.push_tail(json.dumps(chromosome))
+
     else:
-        index = r.randrange(o, len(sample)-1)
+        index = r.randrange(0, len(sample)-1)
         # NOTE: would use insert here but redis natives replaces
         #       not adds on insert
         sample = _sequence('mate_chromomsomes_sample:'+run_id,
@@ -158,31 +186,31 @@ def mate_chromosomes(chromosome, run_id, _sequence, _string):
                             [json.dumps(chromosome)] +
                             sample[index:])
 
-    print 'mate post add sample: %s' % [x for x in sample]
-
     # if the sample is large enough, pick two chromosome's to mate
-    if len(sample) >= sample_size:
-
-        print 'mating'
+    if len(sample) >= min_sample_size:
 
         # pop two chromosomes from the sample
         chrom1, chrom2 = sample.pop_head(), sample.pop_head()
+
+        # if we only got one person from the sample, add
+        # the other one back in (lost opertunity)
+        if not chrom2:
+            sample.push_head(chrom1)
+
+            # and call the whole thing off
+            yield False
+
         # de-serialize
         chrom1, chrom2 = map(json.loads, (chrom1, chrom2))
 
         # split the chromosomes and mate them
-        mid = len(chrom1) / 2
-        chrom1_new = chrom1[0:mid] + chrom2[mid:]
-        chrom2_new = chrom2[0:mid] + chrom1[mid:]
+        for i in xrange(number_of_children):
+            child = _create_child(chrom1, chrom2)
 
-        # yield up an event for each new chromosome
-        yield dict( chromosome = chrom1_new,
-                    parents = [chrom1, chrom2],
-                    run_id = run_id )
-
-        yield dict( chromosome = chrom2_new,
-                    parents = [chrom1, chrom2],
-                    run_id = run_id )
+            # yield up an event for each new chromosome
+            yield dict( chromosome = child,
+                        parents = [chrom1, chrom2],
+                        run_id = run_id )
 
 
 
@@ -192,7 +220,7 @@ def mutate_chromosome(chromosome, run_id, event, _string):
     """
 
     # mutate 10 percent of the population
-    mutation_rate = 0.1
+    mutation_rate = 0.5
     mutation_severity = 0.1
 
     # get our image constraints
@@ -239,6 +267,19 @@ def mutate_chromosome(chromosome, run_id, event, _string):
 def reintroduce_mutant(chromosome, run_id):
     yield True
 
+def increment_population(_string, run_id):
+    population = _string('population:'+run_id)
+    population.incr()
+    print '[I] population: %s' % str(population)
+    yield False
+
+def decrement_population(_string, run_id):
+    population = _string('population:'+run_id)
+    population.decr()
+    print '[D] population: %s' % str(population)
+    yield False
+
+
 # NOTE: It feels like there is somethign wrong w/ this flow
 app  = EventApp('ga_pic',
 
@@ -249,23 +290,28 @@ app  = EventApp('ga_pic',
                 (create_initial_population, 'created_chromosome'),
 
                 # calculate the cost of all new chromosomes
-                (calculate_cost, 'calculated_chromosome_cost'),
+                ('created_chromosome', calculate_cost, 'calculated_chromosome_cost'),
 
                 # filter above avg cost chromosomes
                 (filter_costly_chromosomes, 'found_below_cost_chromosome'),
 
-                # mate the good chromosomes, the result is a created chromosome
+                # mate the good chromosomes, only good looking ppl get laid
                 (mate_chromosomes, 'created_chromosome'),
+                # mate all chromosomes
+                #('created_chromosome', mate_chromosomes, 'created_chromosome'),
 
                 # mutate chromosomes, this will also mutate the initial population
-                # NOTE: could this be feating off created chromosome?
-                (mutate_chromosome, 'mutated_chromosome'),
+                ('created_chromosome', mutate_chromosome, 'mutated_chromosome'),
 
                 # once we've mutated a chromosome we want to re-introduce it
                 # to the pool as a created chromosome
                 # NOTE: this works around each handler only being able to put
                 #       off a single event type easily
-                (reintroduce_mutant, 'created_chromosome')
+                (reintroduce_mutant, 'created_chromosome'),
+
+                # we want to keep a estimate of the total population
+                ('created_chromosome', increment_population, '_'),
+                ('found_above_cost_chromosome', decrement_population, '_')
 
 )
 app.run()
