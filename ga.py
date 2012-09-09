@@ -94,9 +94,7 @@ def calculate_cost(chromosome, run_id, _string):
             cost += 1
 
     # now we know the cost, yield up an event announcing we found it
-    yield dict( chromosome = chromosome,
-                run_id = run_id,
-                cost = cost )
+    yield ('cost', cost)
 
 
 def filter_costly_chromosomes(chromosome, run_id, cost, _sequence, _string,
@@ -107,40 +105,15 @@ def filter_costly_chromosomes(chromosome, run_id, cost, _sequence, _string,
     bases this avg on a sample of the population
     """
 
-    # get our sample of the popuation
-    sample_ratio = .1
-    target_population_size = _int(_string('target_population_size:'+run_id))
-    population_size = _int(_string('population_size:'+run_id))
-    sample_size = min(min(population_size, target_population_size) * sample_ratio, 3)
-    sample = _sequence('costly_filter_sample:'+run_id)
-    print 'costly sample_size: %s' % sample_size
+    # pull our shared lowest cost counter
+    lowest_cost = _int(_string('lowest_cost:'+run_id))
 
-    # don't wanna divide by 0
-    if len(sample) == 0:
-        sample_avg_cost = False
-    else:
-        sample_avg_cost = sum(map(int,sample)) / len(sample)
+    print '[FCC] cost: %s' % cost
+    print '[FCC] lowest_cost: %s' % lowest_cost
 
-    # add our chromosome's cost to the sample, add it to the
-    # left side of the list, this way we can pop off the right
-    sample.push_head(cost)
-
-    print 'costly sample len: %s' % len(sample)
-
-    # if the sample is too small, than we don't have enough
-    # data to make a determination so we'll just let it go on
-    if len(sample) < sample_size:
-        print 'costly sample too small'
-        yield True
-
-    # trim the sample to size
-    else:
-        # we added one, lets remove one
-        sample.pop_tail()
-
-    # if the chromosome is not too costly, than pass it on
-    print 'cost: %s :: sample_avg_cost: %s' % (cost, sample_avg_cost)
-    if sample_avg_cost is False or cost <= sample_avg_cost:
+    if cost < lowest_cost:
+        # we've found the new low !
+        lowest_cost.value = cost
         yield True
 
     else:
@@ -164,43 +137,29 @@ def mate_chromosomes(chromosome, run_id, _sequence, _string):
     population_size = _int(_string('population_size:'+run_id))
     sample = _sequence('mate_chromosomes_sample:'+run_id)
 
+    print '[MC] sample_len: %s' % len(sample)
+
     # we want to try and keep the population size
     # about the same, so we need to have those who mate
     # mate a lot if not that many people are mating
     # we'll have enough children as to reduce the difference between
     # our current population and the target population by 1/10
-    print 'mate target_population_size: %s' % target_population_size
-    print 'mate population_size: %s' % population_size
-    print 'mate target_population diff: %s' % (target_population_size - population_size)
     number_of_children = int((target_population_size - population_size) * .1)
     # we want at least 1 child, we're that awesome
     number_of_children = max(1, number_of_children)
-    print 'mate number of children: %s' % number_of_children
 
     # add our chromosome to the sample
     sample.push_tail(json.dumps(chromosome))
 
     # our sample size has to be at least two large
     # (it takes two to tango)
-    min_sample_size = max(min(target_population_size, population_size) * sample_ratio, 2)
-    print 'mate min_sample_size: %s' % min_sample_size
-    print 'mate sample len: %s' % (len(sample))
+    min_sample_size = 2
 
     # if the sample is large enough, pick two chromosome's to mate
     if len(sample) >= min_sample_size:
 
         # pop two chromosomes from the sample
         chrom1, chrom2 = sample.pop_head(), sample.pop_head()
-
-        # if we only got one person from the sample, add
-        # the other one back in (lost opertunity)
-        if not chrom2:
-            sample.push_head(chrom1)
-
-            # and call the whole thing off
-            yield False
-
-        print 'mating'
 
         # de-serialize
         chrom1, chrom2 = map(json.loads, (chrom1, chrom2))
@@ -213,12 +172,6 @@ def mate_chromosomes(chromosome, run_id, _sequence, _string):
             yield dict( chromosome = child,
                         parents = [chrom1, chrom2],
                         run_id = run_id )
-
-        print 'mate post sample len: %s' % len(sample)
-
-    else:
-        print 'mate sample too small'
-
 
 
 def mutate_chromosome(chromosome, run_id, event, _string):
@@ -276,14 +229,20 @@ def reintroduce_mutant(chromosome, run_id):
 
 def increment_population(_string, run_id):
     population = _string('population_size:'+run_id)
-    population.incr()
-    print '[I] population_size %s' % str(population)
-    yield False
+    p = population.incr()
+    print '[I] population_size %s' % str(p)
+    yield ('population', p)
 
 def decrement_population(_string, run_id):
     population = _string('population_size:'+run_id)
-    population.decr()
-    print '[D] population_size %s' % str(population)
+    p = population.decr()
+    print '[D] population_size %s' % str(p)
+    yield ('population', p)
+
+def event_counter(event_name, event_data, run_id, _dict):
+    counts = _dict('event_counts:'+str(run_id))
+    v = counts.incr(event_name)
+    print '[EC] %s %s' % (event_name, v)
     yield False
 
 
@@ -299,7 +258,7 @@ app  = EventApp('ga_pic',
                 # calculate the cost of all new chromosomes
                 ('created_chromosome', calculate_cost, 'calculated_chromosome_cost'),
 
-                # filter above avg cost chromosomes
+                # identify blow avg cost chromosomes
                 (filter_costly_chromosomes, 'found_below_cost_chromosome'),
 
                 # mate the good chromosomes, only good looking ppl get laid
@@ -311,12 +270,15 @@ app  = EventApp('ga_pic',
                 # once we've mutated a chromosome we want to re-introduce it
                 # to the pool as a created chromosome
                 # NOTE: this works around each handler only being able to put
-                #       off a single event type easily
+                #       off a single event type easily, I also bet revent
+                #       would loop it back into the same queue, need to fix
                 (reintroduce_mutant, 'created_chromosome'),
 
                 # we want to keep a estimate of the total population
-                ('created_chromosome', increment_population, '_'),
-                ('found_above_cost_chromosome', decrement_population, '_')
+                ('created_chromosome', increment_population, 'incremented_population'),
+                ('found_above_cost_chromosome', decrement_population, 'decremented_population'),
+
+                ('.*', event_counter, '_')
 
 )
 app.run()
