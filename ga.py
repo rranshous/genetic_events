@@ -34,6 +34,7 @@ def note_params(target_population_size, image_size, target_image,
     image_size_x = _string('image_size:x:'+run_id, image_size[0])
     image_size_y = _string('image_size:y:'+run_id, image_size[1])
     target_image = _string('target_image:'+run_id, target_image)
+    lowest_cost = _int(_string('lowest_cost:'+run_id, 9999))
 
     # change event name and keep data
     yield ( 'run_id', run_id )
@@ -98,22 +99,40 @@ def calculate_cost(chromosome, run_id, _string):
 
 
 def filter_costly_chromosomes(chromosome, run_id, cost, _sequence, _string,
-                              _event, event_data):
+                              _event, _zset, event_data):
     """
     will filter all chromosome's which have an above avg cost
-
-    bases this avg on a sample of the population
     """
 
+
     # pull our shared lowest cost counter
-    lowest_cost = _int(_string('lowest_cost:'+run_id))
+    lowest_cost = _string('lowest_cost:'+run_id)
+    best_solutions = _zset('best_solutions:'+run_id)
+
+    # to qualify as a low cost chromosome you
+    # must be within 20% of the closest
+    diff = cost - _int(lowest_cost)
+    diff_percent = diff / float(cost)
 
     print '[FCC] cost: %s' % cost
     print '[FCC] lowest_cost: %s' % lowest_cost
+    print '[FCC] diff: %s' % diff
+    print '[FCC] diff_percent: %s' % diff_percent
 
-    if cost < lowest_cost:
+    if diff_percent < 0 or diff_percent < .2:
+        print '[FCC] low cost: %s' % cost
+        #print '[FCC] best_solutions: %s' % len([x for x in best_solutions])
+
+        # add the new found solution and remove worst
+        best_solutions.add(json.dumps(chromosome), cost)
+        if len(best_solutions) > 10:
+            best_solutions.remove_range_by_rank(-1, 0)
+
         # we've found the new low !
-        lowest_cost.value = cost
+        if cost < _int(lowest_cost):
+            print '[FCC] new low: %s' % cost
+            lowest_cost.value = cost
+
         yield True
 
     else:
@@ -163,6 +182,8 @@ def mate_chromosomes(chromosome, run_id, _sequence, _string):
 
         # de-serialize
         chrom1, chrom2 = map(json.loads, (chrom1, chrom2))
+
+        print '[MC] number_of_children: %s' % number_of_children
 
         # split the chromosomes and mate them
         for i in xrange(number_of_children):
