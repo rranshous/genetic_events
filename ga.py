@@ -119,14 +119,14 @@ def filter_costly_chromosomes(chromosome, run_id, cost, _sequence, _string,
     print '[FCC] diff: %s' % diff
     print '[FCC] diff_percent: %s' % diff_percent
 
-    if diff_percent < 0 or diff_percent < .2:
+    if diff_percent <= 0: # or diff_percent < .2:
         print '[FCC] low cost: %s' % cost
         #print '[FCC] best_solutions: %s' % len([x for x in best_solutions])
 
         # add the new found solution and remove worst
         best_solutions.add(json.dumps(chromosome), cost)
-        if len(best_solutions) > 10:
-            best_solutions.remove_range_by_rank(-1, 0)
+        #if len(best_solutions) > 10:
+        #    best_solutions.remove_range_by_rank(-2, -1)
 
         # we've found the new low !
         if cost < _int(lowest_cost):
@@ -157,22 +157,21 @@ def mate_chromosomes(chromosome, cost_diff_percent, run_id, _sequence, _string):
     population_size = _int(_string('population_size:'+run_id))
     sample = _sequence('mate_chromosomes_sample:'+run_id)
 
-    print '[MC] sample_len: %s' % len(sample)
-
     # we want to try and keep the population size
     # about the same, so we need to have those who mate
     # mate a lot if not that many people are mating
     # we'll have enough children as to reduce the difference between
     # our current population and the target population by 1/2
-    number_of_children = int((target_population_size - population_size) * .5)
-
-    # now scale this by how good the cost is compared to the lowest
-    number_of_children += int(-cost_diff_percent * number_of_children)
+    number_of_children = int((target_population_size - population_size) * .50)
 
     # we want at least 1 child, we're that awesome
     number_of_children = max(1, number_of_children)
 
-    print '[MC] number_of_children: %s' % number_of_children
+    # now scale this by how good the cost is compared to the lowest
+    number_of_children += int(-cost_diff_percent * number_of_children * 10)
+
+    # we want at least 1 child, we're that awesome
+    number_of_children = max(1, number_of_children)
 
     # add our chromosome to the sample
     sample.push_tail(json.dumps(chromosome))
@@ -181,11 +180,21 @@ def mate_chromosomes(chromosome, cost_diff_percent, run_id, _sequence, _string):
     # (it takes two to tango)
     min_sample_size = 2
 
+    print '[MC] sample_len: %s' % len(sample)
+
     # if the sample is large enough, pick two chromosome's to mate
     if len(sample) >= min_sample_size:
 
         # pop two chromosomes from the sample
         chrom1, chrom2 = sample.pop_head(), sample.pop_head()
+
+        # reintrocude whatever chromosome we got if we didn't
+        # get both
+        if not chrom1 or not chrom2:
+            if chrom1:
+                sample.push_head(chrom1)
+            if chrom2:
+                sample.push_head(chrom2)
 
         # de-serialize
         chrom1, chrom2 = map(json.loads, (chrom1, chrom2))
@@ -259,18 +268,19 @@ def increment_population(_string, run_id):
     population = _string('population_size:'+run_id)
     p = population.incr()
     print '[I] population_size %s' % str(p)
-    yield ('population', p)
+    yield dict( population = p )
 
 def decrement_population(_string, run_id):
     population = _string('population_size:'+run_id)
     p = population.decr()
     print '[D] population_size %s' % str(p)
-    yield ('population', p)
+    yield dict( population = p )
 
 def event_counter(event_name, event_data, run_id, _dict):
     counts = _dict('event_counts:'+str(run_id))
     v = counts.incr(event_name)
-    print '[EC] %s %s' % (event_name, v)
+    t = counts.incr('total')
+    print '[EC] (%s) %s %s' % (t, event_name, v)
     yield False
 
 
