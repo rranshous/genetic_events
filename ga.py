@@ -133,13 +133,14 @@ def filter_costly_chromosomes(chromosome, run_id, cost, _sequence, _string,
             print '[FCC] new low: %s' % cost
             lowest_cost.value = cost
 
-        yield True
+        yield ( 'cost_diff_percent', diff_percent )
 
     else:
+        event_data['cost_diff_percent'] = diff_percent
         yield _event('found_above_cost_chromosome', event_data)
 
 
-def mate_chromosomes(chromosome, run_id, _sequence, _string):
+def mate_chromosomes(chromosome, cost_diff_percent, run_id, _sequence, _string):
     """
     mates chromosomes from the same run, produces two chromosomes from
     two chromosomes
@@ -162,10 +163,16 @@ def mate_chromosomes(chromosome, run_id, _sequence, _string):
     # about the same, so we need to have those who mate
     # mate a lot if not that many people are mating
     # we'll have enough children as to reduce the difference between
-    # our current population and the target population by 1/10
-    number_of_children = int((target_population_size - population_size) * .1)
+    # our current population and the target population by 1/2
+    number_of_children = int((target_population_size - population_size) * .5)
+
+    # now scale this by how good the cost is compared to the lowest
+    number_of_children += int(-cost_diff_percent * number_of_children)
+
     # we want at least 1 child, we're that awesome
     number_of_children = max(1, number_of_children)
+
+    print '[MC] number_of_children: %s' % number_of_children
 
     # add our chromosome to the sample
     sample.push_tail(json.dumps(chromosome))
