@@ -283,6 +283,10 @@ def event_counter(event_name, event_data, run_id, _dict):
     print '[EC] (%s) %s %s' % (t, event_name, v)
     yield False
 
+def print_revent_report(introspect, revent_client):
+    introspect.print_report(revent_client)
+    yield False
+
 
 # NOTE: It feels like there is somethign wrong w/ this flow
 app  = EventApp('ga_pic',
@@ -316,7 +320,8 @@ app  = EventApp('ga_pic',
                 ('created_chromosome', increment_population, 'incremented_population'),
                 ('found_above_cost_chromosome', decrement_population, 'decremented_population'),
 
-                ('.*', event_counter, '_')
+                ('.*', event_counter, '_'),
+                ('.*', print_revent_report, '_')
 
 )
 app.run()
