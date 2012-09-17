@@ -4,7 +4,7 @@ from eventapp import EventApp
 import json
 from itertools import izip
 
-eventapp.threads_per_stage = 4
+eventapp.threads_per_stage = 2
 
 # helper for those primitives
 def _int(p):
@@ -14,12 +14,14 @@ def _int(p):
         # protect against redis natives
         return 0
 
+
 def _create_new_child(chromosome_length):
     """
     creates a new random chromosome
     """
 
     return [r.randint(0,1) for i in xrange(chromosome_length)]
+
 
 def _create_child(p1=None, p2=None):
     """
@@ -28,6 +30,7 @@ def _create_child(p1=None, p2=None):
 
     index = r.randint(0, len(p1))
     return p1[index:] + p2[:index]
+
 
 def note_params(target_population_size, image_size, target_image,
                 run_id, _string):
@@ -47,7 +50,10 @@ def note_params(target_population_size, image_size, target_image,
 
 
 def create_initial_population(target_population_size, image_size,
-                              run_id):
+                              _string, run_id):
+    """
+    fills in the initial population
+    """
 
     chrom_len = image_size[0] * image_size[1]
 
@@ -56,6 +62,40 @@ def create_initial_population(target_population_size, image_size,
 
         yield dict( chromosome = _create_new_child(chrom_len),
                     run_id = run_id )
+
+        # increment the population size
+        population = _string('population_size:'+run_id).incr()
+
+
+def introduce_new_chromosomes(run_id, _string):
+    """
+    attempts to keep the population high by introducing new
+    individuals if the # in the pop gets too low
+    """
+
+    image_x = _int(_string('image_size:x:'+run_id))
+    image_y = _int(_string('image_size:y:'+run_id))
+    chrom_len = image_x * image_y
+    target_population_size = _int(_string('target_population_size:'+run_id))
+    population_size = _int(_string('population_size:'+run_id))
+    diff = target_population_size - population_size
+    # try and cut the diff in half
+    number_to_add = int(diff * .5)
+
+    # if we are below the
+    if diff > 0:
+
+        print '[IN] number_to_add: %s' % number_to_add
+        print '[IN] diff: %s' % diff
+
+        # create new children
+        for i in xrange(number_to_add):
+
+            yield dict( chromosome = _create_new_child(chrom_len),
+                        run_id = run_id )
+
+            # increment the population size
+            population = _string('population_size:'+run_id).incr()
 
 
 def calculate_cost(chromosome, run_id, _string):
@@ -114,9 +154,16 @@ def filter_costly_chromosomes(chromosome, run_id, cost, _sequence, _string,
             print '[FCC] new low: %s' % cost
             lowest_cost.value = cost
 
+        # increment the population size
+        population = _string('population_size:'+run_id).incr()
+
         yield ( 'cost_diff_percent', diff_percent )
 
     else:
+        # decrement the population size,
+        # this guys not getting mated
+        population = _string('population_size:'+run_id).decr()
+
         event_data['cost_diff_percent'] = diff_percent
         yield _event('found_above_cost_chromosome', event_data)
 
@@ -195,6 +242,9 @@ def mate_chromosomes(chromosome, cost_diff_percent, run_id, _sequence, _string):
                             parents = [chrom1, chrom2],
                             run_id = run_id )
 
+        # increment the population size
+        population = _string('population_size:'+run_id).incr()
+
 
 def mutate_chromosome(chromosome, run_id, event, _string):
     """
@@ -240,33 +290,20 @@ def mutate_chromosome(chromosome, run_id, event, _string):
                     original_chromosome = original_chromosome,
                     run_id = run_id )
 
+        # increment the population size
+        population = _string('population_size:'+run_id).incr()
 
-def reintroduce_mutant(chromosome, run_id):
+
+def reintroduce_mutant(chromosome, run_id, _string):
+    # increment the population size
+    population = _string('population_size:'+run_id).incr()
     yield True
 
-def increment_population(_string, run_id):
-    population = _string('population_size:'+run_id)
-    p = population.incr()
-    print '[I] population_size %s' % str(p)
-    yield dict( population = p )
-
-def decrement_population(_string, run_id):
-    population = _string('population_size:'+run_id)
-    p = population.decr()
-    print '[D] population_size %s' % str(p)
-    yield dict( population = p )
-
-def event_counter(event_name, event_data, run_id, _dict):
-    counts = _dict('event_counts:'+str(run_id))
-    v = counts.incr(event_name)
-    t = counts.incr('total')
-    print '[EC] (%s) %s %s' % (t, event_name, v)
-    yield False
 
 print_count = 0
 def print_revent_report(introspect, revent_client):
     global print_count
-    if print_count % 100 == 0:
+    if print_count % 1000 == 0:
         introspect.print_report(revent_client)
     print_count += 1
     yield False
@@ -293,6 +330,11 @@ app  = EventApp('ga_pic',
                 # mutate chromosomes, this will also mutate the initial population
                 ('found_below_cost_chromosome', mutate_chromosome, 'mutated_chromosome'),
 
+                # every time we find a chromosome which isn't going to get to mate
+                # we want to try and make up the diff between our current pop and the
+                # target pop w/ some random new chromosomes
+                ('found_above_cost_chromosome', introduce_new_chromosomes, 'created_chromosome'),
+
                 # once we've mutated a chromosome we want to re-introduce it
                 # to the pool as a created chromosome
                 # NOTE: this works around each handler only being able to put
@@ -300,11 +342,6 @@ app  = EventApp('ga_pic',
                 #       would loop it back into the same queue, need to fix
                 (reintroduce_mutant, 'created_chromosome'),
 
-                # we want to keep a estimate of the total population
-                ('created_chromosome', increment_population, 'incremented_population'),
-                ('found_above_cost_chromosome', decrement_population, 'decremented_population'),
-
-                ('.*', event_counter, '_'),
                 ('.*', print_revent_report, '_')
 
 )
