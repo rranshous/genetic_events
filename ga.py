@@ -1,7 +1,10 @@
 import random as r
+import eventapp
 from eventapp import EventApp
 import json
 from itertools import izip
+
+eventapp.threads_per_stage = 4
 
 # helper for those primitives
 def _int(p):
@@ -11,17 +14,20 @@ def _int(p):
         # protect against redis natives
         return 0
 
-def _create_child(p1, p2):
+def _create_new_child(chromosome_length):
     """
-    creates a child by taking 1/2 the genes from each parent
-    each gene is put up against random to choose parent
+    creates a new random chromosome
     """
 
-    child = []
-    # randomly choose from one of the parents genes
-    for genes in izip(p1, p2):
-        child.append(genes[r.randrange(0,2)])
-    return child
+    return [r.randint(0,1) for i in xrange(chromosome_length)]
+
+def _create_child(p1=None, p2=None):
+    """
+    creates a child by folding the genes at a random location
+    """
+
+    index = r.randint(0, len(p1))
+    return p1[index:] + p2[:index]
 
 def note_params(target_population_size, image_size, target_image,
                 run_id, _string):
@@ -43,25 +49,12 @@ def note_params(target_population_size, image_size, target_image,
 def create_initial_population(target_population_size, image_size,
                               run_id):
 
+    chrom_len = image_size[0] * image_size[1]
+
     # fill the population w/ chromosomes
     for i in xrange(target_population_size):
 
-        # create a gene for each pixel of the target image
-        chromosome = []
-        for j in xrange(image_size[0] * image_size[1]):
-
-            # create a random gene with a random x and y within
-            # the image bounds, and a random value
-            gene = [r.randrange(0, image_size[0]),
-                    r.randrange(0, image_size[1]),
-                    r.sample([0,1], 1)[0]]
-
-            # add the gene to our chromosome
-            chromosome.append(gene)
-
-        # our resulting event will have our chromosome definition
-        # and the run it belongs to
-        yield dict( chromosome = chromosome,
+        yield dict( chromosome = _create_new_child(chrom_len),
                     run_id = run_id )
 
 
@@ -77,21 +70,10 @@ def calculate_cost(chromosome, run_id, _string):
     target_image = _string('target_image:'+run_id)
 
     cost = 0
-    chromosome_image = [' ' for x in xrange(image_x * image_y)]
 
-    # go through the gene's creating our chromosome image
-    for gene in chromosome:
-        try:
-            gene_x, gene_y, gene_value = gene
-        except Exception, ex:
-            raise Exception( 'gene exception: %s %s' % (type(chromosome), str(chromosome)))
-
-        offset = gene_x + gene_y * image_x
-        chromosome_image[offset] = gene_value
-
-    # now compare our resulting image to the target image
+    # compare our chromosome against the target's
     for i in xrange(image_x * image_y):
-        if int(target_image[i]) != chromosome_image[i]:
+        if int(target_image[i]) != chromosome[i]:
             cost += 1
 
     # now we know the cost, yield up an event announcing we found it
@@ -119,9 +101,8 @@ def filter_costly_chromosomes(chromosome, run_id, cost, _sequence, _string,
     print '[FCC] diff: %s' % diff
     print '[FCC] diff_percent: %s' % diff_percent
 
-    if diff_percent <= 0: # or diff_percent < .2:
+    if diff_percent <= 0 or diff_percent < .1:
         print '[FCC] low cost: %s' % cost
-        #print '[FCC] best_solutions: %s' % len([x for x in best_solutions])
 
         # add the new found solution and remove worst
         best_solutions.add(json.dumps(chromosome), cost)
@@ -161,8 +142,8 @@ def mate_chromosomes(chromosome, cost_diff_percent, run_id, _sequence, _string):
     # about the same, so we need to have those who mate
     # mate a lot if not that many people are mating
     # we'll have enough children as to reduce the difference between
-    # our current population and the target population by 1/2
-    number_of_children = int((target_population_size - population_size) * .50)
+    # our current population and the target population by 10%
+    number_of_children = int((target_population_size - population_size) * .1)
 
     # we want at least 1 child, we're that awesome
     number_of_children = max(1, number_of_children)
@@ -188,27 +169,31 @@ def mate_chromosomes(chromosome, cost_diff_percent, run_id, _sequence, _string):
         # pop two chromosomes from the sample
         chrom1, chrom2 = sample.pop_head(), sample.pop_head()
 
+        print '[MC] mating parents [%s] %s / [%s] %s' % (type(chrom1), chrom1, type(chrom2), chrom2)
+
         # reintrocude whatever chromosome we got if we didn't
         # get both
-        if not chrom1 or not chrom2:
+        if chrom1 is None or chrom2 is None:
             if chrom1:
                 sample.push_head(chrom1)
             if chrom2:
                 sample.push_head(chrom2)
 
-        # de-serialize
-        chrom1, chrom2 = map(json.loads, (chrom1, chrom2))
+        else:
 
-        print '[MC] number_of_children: %s' % number_of_children
+            # de-serialize
+            chrom1, chrom2 = map(json.loads, (chrom1, chrom2))
 
-        # split the chromosomes and mate them
-        for i in xrange(number_of_children):
-            child = _create_child(chrom1, chrom2)
+            print '[MC] number_of_children: %s' % number_of_children
 
-            # yield up an event for each new chromosome
-            yield dict( chromosome = child,
-                        parents = [chrom1, chrom2],
-                        run_id = run_id )
+            # split the chromosomes and mate them
+            for i in xrange(number_of_children):
+                child = _create_child(chrom1, chrom2)
+
+                # yield up an event for each new chromosome
+                yield dict( chromosome = child,
+                            parents = [chrom1, chrom2],
+                            run_id = run_id )
 
 
 def mutate_chromosome(chromosome, run_id, event, _string):
@@ -216,45 +201,40 @@ def mutate_chromosome(chromosome, run_id, event, _string):
     mutates the given chromosome
     """
 
-    # mutate 10 percent of the population
-    mutation_rate = 0.5
-    mutation_severity = 0.1
+    # we want to mutate a % of the population
+    mutation_chance = .5
 
-    # get our image constraints
-    image_size_x = _int(_string('image_size:x:'+run_id))
-    image_size_y = _int(_string('image_size:y:'+run_id))
-    image_size = [image_size_x, image_size_y]
+    # but we only want to mutate if the population is low
+    target_population_size = _int(_string('target_population_size:'+run_id))
+    population_size = _int(_string('population_size:'+run_id))
+    diff = target_population_size - population_size
+    over_population_size = diff < 0
 
-    # are we lucky enough to mutate ?
-    if r.random() <= mutation_rate:
+    if over_population_size:
+        print '[MU] over_population_size: %s' % diff
+    else:
+        print '[MU] under_population_size: %s' % diff
+
+    # should this chromosome mutate?
+    if not over_population_size or r.random() < mutation_chance:
+
+        # the number of genes that we mutate is based on the
+        # mutation severity
+        mutation_severity = 0.1 # % of genes mutated
+
+        # get our image constraints
+        image_size_x = _int(_string('image_size:x:'+run_id))
+        image_size_y = _int(_string('image_size:y:'+run_id))
+        image_size = [image_size_x, image_size_y]
+
+        print '[MU] mutation_severity: %s' % mutation_severity
 
         # keep a copy for later
         original_chromosome = chromosome[:]
-
-        # we mutate the chromosome by changing one of it's
-        # gene's, it's x, its y, or it's value
-        choice = r.sample([0,1,2], 1)[0]
-        gene = r.sample(chromosome, 1)[0]
-
-        # change x or y
-        if choice in (0, 1):
-            # change it's X limiting to possible range, at least 1
-            skew = max(int(mutation_severity * image_size[choice]), 1)
-            # limit to 0 -> image size
-            top = min(image_size[choice], gene[choice] + skew)
-            bottom = max(0, gene[choice] - skew)
-            try:
-                gene[choice] = r.randrange(bottom, top)
-            except Exception:
-                raise Exception('choice: %s\ngenechoice: %s\nbottom: %s\ntop: %s\nskew: %s\nimage size: %s'
-                                % (choice, gene[choice], bottom, top, skew, str(image_size)))
-
-        # change value
-        if choice == 2:
-            # since the value is 0 or 1, we're going to only change
-            # to the other if the mutation severity pans out
+        for i in xrange(len(original_chromosome)):
             if r.random() <= mutation_severity:
-                gene[2] = 0 if gene[2] is 1 else 1
+                # flip the gene between 0 and 1
+                chromosome[i] = int(not chromosome[i])
 
         yield dict( chromosome = chromosome,
                     original_chromosome = original_chromosome,
@@ -283,8 +263,12 @@ def event_counter(event_name, event_data, run_id, _dict):
     print '[EC] (%s) %s %s' % (t, event_name, v)
     yield False
 
+print_count = 0
 def print_revent_report(introspect, revent_client):
-    introspect.print_report(revent_client)
+    global print_count
+    if print_count % 100 == 0:
+        introspect.print_report(revent_client)
+    print_count += 1
     yield False
 
 
@@ -307,7 +291,7 @@ app  = EventApp('ga_pic',
                 (mate_chromosomes, 'created_chromosome'),
 
                 # mutate chromosomes, this will also mutate the initial population
-                ('created_chromosome', mutate_chromosome, 'mutated_chromosome'),
+                ('found_below_cost_chromosome', mutate_chromosome, 'mutated_chromosome'),
 
                 # once we've mutated a chromosome we want to re-introduce it
                 # to the pool as a created chromosome
