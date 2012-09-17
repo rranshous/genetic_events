@@ -73,6 +73,12 @@ def introduce_new_chromosomes(run_id, _string):
     individuals if the # in the pop gets too low
     """
 
+    # if we've hit 0, we're done
+    lowest_cost = _int(_string('lowest_cost:'+run_id))
+    if lowest_cost == 0:
+        print 'lowest cost, exiting'
+        raise StopIteration
+
     image_x = _int(_string('image_size:x:'+run_id))
     image_y = _int(_string('image_size:y:'+run_id))
     chrom_len = image_x * image_y
@@ -91,11 +97,12 @@ def introduce_new_chromosomes(run_id, _string):
         # create new children
         for i in xrange(number_to_add):
 
+            # increment the population size
+            population = _string('population_size:'+run_id).incr()
+
             yield dict( chromosome = _create_new_child(chrom_len),
                         run_id = run_id )
 
-            # increment the population size
-            population = _string('population_size:'+run_id).incr()
 
 
 def calculate_cost(chromosome, run_id, _string):
@@ -103,6 +110,12 @@ def calculate_cost(chromosome, run_id, _string):
     compare's the chromosome against the target image, calculates
     the cost based on how different they are
     """
+
+    # if we've hit 0, we're done
+    lowest_cost = _int(_string('lowest_cost:'+run_id))
+    if lowest_cost == 0:
+        print 'lowest cost, exiting'
+        raise StopIteration
 
     # get the image bounds
     image_x = _int(_string('image_size:x:'+run_id))
@@ -126,6 +139,11 @@ def filter_costly_chromosomes(chromosome, run_id, cost, _sequence, _string,
     will filter all chromosome's which have an above avg cost
     """
 
+    # if we've hit 0, we're done
+    lowest_cost = _int(_string('lowest_cost:'+run_id))
+    if lowest_cost == 0:
+        print 'lowest cost, exiting'
+        raise StopIteration
 
     # pull our shared lowest cost counter
     lowest_cost = _string('lowest_cost:'+run_id)
@@ -156,6 +174,7 @@ def filter_costly_chromosomes(chromosome, run_id, cost, _sequence, _string,
 
         # increment the population size
         population = _string('population_size:'+run_id).incr()
+        print '[I] population size: %s' % population
 
         yield ( 'cost_diff_percent', diff_percent )
 
@@ -179,6 +198,12 @@ def mate_chromosomes(chromosome, cost_diff_percent, run_id, _sequence, _string):
 
     this means that the first few events we get we will not act on
     """
+
+    # if we've hit 0, we're done
+    lowest_cost = _int(_string('lowest_cost:'+run_id))
+    if lowest_cost == 0:
+        print 'lowest cost, exiting'
+        raise StopIteration
 
     # get our datas
     sample_ratio = .1
@@ -236,21 +261,28 @@ def mate_chromosomes(chromosome, cost_diff_percent, run_id, _sequence, _string):
 
             # split the chromosomes and mate them
             for i in xrange(number_of_children):
-                child = _create_child(chrom1, chrom2)
+
+                # increment the population size
+                population = _string('population_size:'+run_id).incr()
 
                 # yield up an event for each new chromosome
+                child = _create_child(chrom1, chrom2)
                 yield dict( chromosome = child,
                             parents = [chrom1, chrom2],
                             run_id = run_id )
 
-        # increment the population size
-        population = _string('population_size:'+run_id).incr()
 
 
 def mutate_chromosome(chromosome, run_id, event, _string):
     """
     mutates the given chromosome
     """
+
+    # if we've hit 0, we're done
+    lowest_cost = _int(_string('lowest_cost:'+run_id))
+    if lowest_cost == 0:
+        print 'lowest cost, exiting'
+        raise StopIteration
 
     # we want to mutate a % of the population
     mutation_chance = .5
@@ -287,18 +319,20 @@ def mutate_chromosome(chromosome, run_id, event, _string):
                 # flip the gene between 0 and 1
                 chromosome[i] = int(not chromosome[i])
 
+        # increment the population size
+        population = _string('population_size:'+run_id).incr()
+
         yield dict( chromosome = chromosome,
                     original_chromosome = original_chromosome,
                     run_id = run_id )
 
-        # increment the population size
-        population = _string('population_size:'+run_id).incr()
 
 
 def reintroduce_mutant(chromosome, run_id, _string):
     # increment the population size
     population = _string('population_size:'+run_id).incr()
     yield True
+
 
 # NOTE: It feels like there is somethign wrong w/ this flow
 app  = EventApp('ga_pic',
