@@ -60,11 +60,13 @@ def create_initial_population(target_population_size, image_size,
     # fill the population w/ chromosomes
     for i in xrange(target_population_size):
 
+        # increment the population size
+        population = _string('population_size:'+run_id).incr()
+        print '[CIP] population size: %s' % population
+
         yield dict( chromosome = _create_new_child(chrom_len),
                     run_id = run_id )
 
-        # increment the population size
-        population = _string('population_size:'+run_id).incr()
 
 
 def introduce_new_chromosomes(run_id, _string):
@@ -99,10 +101,10 @@ def introduce_new_chromosomes(run_id, _string):
 
             # increment the population size
             population = _string('population_size:'+run_id).incr()
+            print '[IN] population size: %s' % population
 
             yield dict( chromosome = _create_new_child(chrom_len),
                         run_id = run_id )
-
 
 
 def calculate_cost(chromosome, run_id, _string):
@@ -153,13 +155,15 @@ def filter_costly_chromosomes(chromosome, run_id, cost, _sequence, _string,
     # must be within 20% of the closest
     diff = cost - _int(lowest_cost)
     diff_percent = diff / float(cost or .000001)
+    # TODO: scale the diff percent based on score's
+    #       diff from 0
 
     print '[FCC] cost: %s' % cost
     print '[FCC] lowest_cost: %s' % lowest_cost
     print '[FCC] diff: %s' % diff
     print '[FCC] diff_percent: %s' % diff_percent
 
-    if diff_percent <= 0 or diff_percent < .1:
+    if diff_percent <= 0: # or diff_percent < .1:
         print '[FCC] low cost: %s' % cost
 
         # add the new found solution and remove worst
@@ -174,7 +178,7 @@ def filter_costly_chromosomes(chromosome, run_id, cost, _sequence, _string,
 
         # increment the population size
         population = _string('population_size:'+run_id).incr()
-        print '[I] population size: %s' % population
+        print '[FCC] population size: %s' % population
 
         yield ( 'cost_diff_percent', diff_percent )
 
@@ -264,6 +268,7 @@ def mate_chromosomes(chromosome, cost_diff_percent, run_id, _sequence, _string):
 
                 # increment the population size
                 population = _string('population_size:'+run_id).incr()
+                print '[MC] population size: %s' % population
 
                 # yield up an event for each new chromosome
                 child = _create_child(chrom1, chrom2)
@@ -321,6 +326,7 @@ def mutate_chromosome(chromosome, run_id, event, _string):
 
         # increment the population size
         population = _string('population_size:'+run_id).incr()
+        print '[MU] population size: %s' % population
 
         yield dict( chromosome = chromosome,
                     original_chromosome = original_chromosome,
@@ -331,6 +337,7 @@ def mutate_chromosome(chromosome, run_id, event, _string):
 def reintroduce_mutant(chromosome, run_id, _string):
     # increment the population size
     population = _string('population_size:'+run_id).incr()
+    print '[RM] population size: %s' % population
     yield True
 
 
@@ -365,7 +372,7 @@ app  = EventApp('ga_pic',
                 # NOTE: this works around each handler only being able to put
                 #       off a single event type easily, I also bet revent
                 #       would loop it back into the same queue, need to fix
-                (reintroduce_mutant, 'created_chromosome'),
+                ('mutated_chromosome', reintroduce_mutant, 'created_chromosome'),
 
 )
 
