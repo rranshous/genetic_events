@@ -134,7 +134,7 @@ def filter_costly_chromosomes(chromosome, run_id, cost, _sequence, _string,
     # to qualify as a low cost chromosome you
     # must be within 20% of the closest
     diff = cost - _int(lowest_cost)
-    diff_percent = diff / float(cost)
+    diff_percent = diff / float(cost or .000001)
 
     print '[FCC] cost: %s' % cost
     print '[FCC] lowest_cost: %s' % lowest_cost
@@ -163,6 +163,7 @@ def filter_costly_chromosomes(chromosome, run_id, cost, _sequence, _string,
         # decrement the population size,
         # this guys not getting mated
         population = _string('population_size:'+run_id).decr()
+        print '[D] population size: %s' % population
 
         event_data['cost_diff_percent'] = diff_percent
         yield _event('found_above_cost_chromosome', event_data)
@@ -299,16 +300,6 @@ def reintroduce_mutant(chromosome, run_id, _string):
     population = _string('population_size:'+run_id).incr()
     yield True
 
-
-print_count = 0
-def print_revent_report(introspect, revent_client):
-    global print_count
-    if print_count % 1000 == 0:
-        introspect.print_report(revent_client)
-    print_count += 1
-    yield False
-
-
 # NOTE: It feels like there is somethign wrong w/ this flow
 app  = EventApp('ga_pic',
 
@@ -342,7 +333,6 @@ app  = EventApp('ga_pic',
                 #       would loop it back into the same queue, need to fix
                 (reintroduce_mutant, 'created_chromosome'),
 
-                ('.*', print_revent_report, '_')
-
 )
-app.run()
+
+app.run(threaded=False)
